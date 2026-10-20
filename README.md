@@ -1,90 +1,129 @@
 # BackendBot
 
-Your personal coding agent, across every company you work with. When you're mentioned in Slack or assigned a Jira ticket, it works out
-whether it's a coding task and which repo it belongs to, then DMs you a plan. When you tap **Go**,
-it clones the repo into a fresh workspace, creates its own `agent/...` branch, writes the code and
-tests, opens a **draft** PR (GitHub) or MR (GitLab), and DMs you the link.
+My personal coding agent. When I'm mentioned in Slack or assigned a Jira ticket, it works out
+whether it's a coding task and which repo it belongs to, then DMs me a plan. When I tap **Go**, it
+clones the repo into a fresh workspace, creates its own `agent/...` branch, writes the code and tests,
+opens a **draft** PR (GitHub) or MR (GitLab), and DMs me the link.
 
 ```
 Slack mention / Jira assignment
    → capture task (SQLite, deduped by thread / ticket key)
    → triage: coding? which repo? plan?
-   → DM you: summary · plan · repo picker · [Go] [Skip]
+   → DM me: summary · plan · repo picker · [Go] [Skip]
    → on Go: fresh clone → agent/<branch> → Claude Agent SDK codes + runs tests → commit
-   → push → draft PR/MR → DM you the link + what to check
+   → push → draft PR/MR → DM me the link + what to check
 ```
 
-## Multiple companies
-Everything is organised by **company** in `companies.yaml`. Each company has its own Slack workspace,
-Jira site, GitHub/GitLab tokens and repo list. Secrets stay in `.env`, and the YAML only names them (`*_env`).
+## My setup at a glance
 
-What stays separate between companies:
-- **Triage:** a task only ever sees its own company's repos, so it can't be routed to another client's code.
-- **Cards:** posted in the company's own Slack. If a company has no Slack, you must explicitly choose
-  another workspace with `notify_via`.
-- **Git:** each clone and push uses that company's token. Workspaces live under `data/work/<company>/`.
-- **Jira:** keys are tracked per company, so `PAY-12` at Arebak and `PAY-12` at a client never collide.
-- **Buttons:** a click only acts on tasks whose card lives in that workspace, and only if it comes from you.
+| | |
+|---|---|
+| Company | **Arebak** (`id: arebak`) |
+| Slack workspace | Arebak2. My member ID: `U0BD9U81FB6` |
+| Jira | https://arebak-team.atlassian.net (as `quadri.abolarinwa@arebak.io`), polled every 120s |
+| Models | `claude-sonnet-5-5` for both triage and coding |
+| Limits per task | 60 turns · $3 budget · 30 min timeout |
+| Auto-start | **off**. Nothing runs until I tap Go |
+| Commits authored as | `BackendBot <backendbot@users.noreply.github.com>` |
 
-> Before connecting a company, check that its policy (or your contract) allows sending its code and
-> tickets to an AI provider. Some clients forbid it.
+### Repos
 
-## Setup, per company
+| Name | Repo | Base branch | Token (`.env`) | Routed by |
+|---|---|---|---|---|
+| Sheltera | `Arebak/sheltera-dashboard` (GitHub) | `dev` | `AREBAK_GITHUB_TOKEN` | Slack `#arbol` · contractor, vegetation, trimming |
+| Alex | `Arebak-ALEX/Alex-backend` (GitHub) | `main` | `AREBAK_ALEX_GITHUB_TOKEN` | Jira `AssetLife` · Slack `#wmp` `#assetledger` `#asset-life` `#stormwrangler` · wildfire, risk, storm, ledger… |
 
-### 1. Slack (one app per workspace)
-For **each** company workspace you're in:
-1. https://api.slack.com/apps → **Create New App → From a manifest** → pick that workspace → paste `slack-app-manifest.yaml`.
-2. **Install App → Install to Workspace.** Copy the **Bot** token (`xoxb-`) and **User** token (`xoxp-`).
-   If you see "Request to Install", a workspace admin must approve it first.
-3. **Basic Information → App-Level Tokens** → create one with `connections:write` (`xapp-`).
-4. Your member ID **in that workspace**: profile → ⋮ → **Copy member ID**. It's different in every workspace.
+The two repos live in different GitHub orgs, and a fine-grained GitHub token only covers one org,
+so Alex has its own token (`token_env` on that repo in `companies.yaml`).
 
-### 2. Jira (one token per Atlassian account)
-Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens while logged in
-with the email you use for that company's Jira.
+### Where things live
+- `.env`: all secrets (Anthropic key, Slack bot/app/user tokens, Jira token, GitHub/GitLab tokens). Never commit it.
+- `companies.yaml`: companies, repos and routing hints. It only *names* the env vars that hold secrets.
+- `data/`: the SQLite task DB (`backendbot.db`) and the per-task clones under `data/work/arebak/`.
 
-### 3. Git tokens (one per GitHub org / GitLab instance)
-- **GitHub:** a fine-grained token can only cover **one** owner (org). Create one per org, with resource owner =
-  that org, *Only select repositories*, **Contents** and **Pull requests** set to read/write. If a company has
-  repos in two orgs, set the second org's token on those repos with `token_env`.
-- **GitLab:** one token per GitLab instance/account, scopes `api` + `write_repository`. Set `url` for self-hosted.
+## Run it
 
-### 4. Configure and run
 ```bash
-cp .env.example .env                      # add each company's secrets
-cp companies.example.yaml companies.yaml  # companies, repos, and which env vars hold their secrets
-docker compose up -d --build
-docker compose logs -f
+docker compose up -d --build   # build and start (also after any change to src/ or Dockerfile)
+docker compose logs -f         # watch it
+docker compose restart         # after editing companies.yaml or .env
+docker compose down            # stop
 ```
-The bot checks the whole config at startup. A missing token or a bad repo entry stops it with a clear
-message naming the company. You get a 🟢 DM in each workspace once it's online.
 
-### 5. Teach it each repo
-Add a `CLAUDE.md` at the root of each repo. Include how to build, lint and test, the folder layout,
-the error-handling pattern, and one good example endpoint and test. The agent reads it automatically.
-Add the toolchains your repos need (Go, Java…) to the `Dockerfile`.
-
-## Safety model
-- **Ask-first by default.** Nothing is coded until you tap Go. Only your Slack user ID can press the
-  buttons. `AUTO_START=true` lets confident tasks start on their own. Turn it on only after a few weeks of good triage.
-- **Request text is treated as data, not instructions,** in both the triage and agent prompts.
-- **No secrets reach the agent.** Its environment is replaced with just `PATH`, `HOME` and the Anthropic key.
-  The git remote has no token in it. Credentials are only passed directly to `git clone` and `git push`, which this program runs itself.
-- **Blocked commands:** `git push`/`remote`, `curl`/`wget`/`ssh`, `docker`/`kubectl`/cloud CLIs, `sudo`, `rm -rf /`.
-  Web tools are disabled.
-- **Limits per task:** `AGENT_MAX_TURNS`, `AGENT_MAX_BUDGET_USD` (hard cost cap) and `TASK_TIMEOUT_MINUTES`.
-- **Only `agent/*` branches and draft PRs.** It cannot merge or deploy. Protect your main branches as usual.
-- **Only repos in `companies.yaml`.** Tasks run one at a time.
-
-> The command blocklist is a guardrail, not a perfect sandbox. Run it in Docker, on a machine without
-> production credentials, with tokens scoped only to the repos you list.
+A healthy start looks like this, followed by a 🟢 DM in Slack:
+```
+[slack:arebak] connected (Socket Mode)
+[jira:arebak] polling https://arebak-team.atlassian.net every 120s
+[company:arebak] 2 repos · slack own · jira on
+[backendbot] ready · 1 companies · auto-start off
+```
 
 ## Day to day
 - Every task gets one DM card. Progress, the PR link, test results, assumptions and questions go in its thread.
-- **Failed?** The reason is in the thread, and the workspace is kept under `data/work/` for inspection.
-  Tap **Go** to retry.
 - **Wrong repo?** Change it in the dropdown before tapping Go.
-- To check what it captured: `sqlite3 data/backendbot.db "select company,id,status,repo,pr_url,cost_usd from tasks order by created_at desc limit 20"`
+- **Failed?** The reason is in the thread, and the workspace is kept under `data/work/arebak/` for
+  inspection. Tap **Go** to retry.
+- To see recent tasks:
+  ```bash
+  sqlite3 data/backendbot.db "select company,id,status,repo,pr_url,cost_usd from tasks order by created_at desc limit 20"
+  ```
+
+## Troubleshooting
+
+**No DMs at all, but the logs look fine.** Check `slack.my_user_id` in `companies.yaml`. It must be my
+member ID in *that* workspace (`U0BD9U81FB6` for Arebak2), not the example value. If it's wrong,
+every DM fails with `channel_not_found` and the Go/Skip buttons ignore me. Startup now logs
+`could not DM ...` when this happens. To look up the ID behind the user token:
+```bash
+docker compose exec -T backendbot node -e 'new (require("@slack/web-api").WebClient)(process.env.AREBAK_SLACK_USER_TOKEN).auth.test().then(r=>console.log(r.user_id, r.team))'
+```
+
+**Mentions aren't picked up.** The app needs the user scopes and `user_events` from
+`slack-app-manifest.yaml`. Reinstall the app after changing the manifest and update the `xoxp-` token in `.env`.
+
+**Clone or push fails.** Check that the repo's token covers that org (`Arebak` vs `Arebak-ALEX`) and
+has **Contents** and **Pull requests** set to read/write.
+
+**Tests can't run in the container.** The image has Node 22, Python 3, make and g++. Add any other
+toolchain a repo needs to the `Dockerfile`.
+
+## Adding things
+
+**A repo:** add an entry under `repos:` in `companies.yaml` with `name`, `provider`, `path`,
+`default_branch`, `description` and routing hints (`jira_projects`, `slack_channels`, `keywords`).
+If it's in a GitHub org not covered by `AREBAK_GITHUB_TOKEN`, create a fine-grained token for that
+org, add it to `.env`, and set `token_env` on the repo. Then add a `CLAUDE.md` at the repo root
+covering how to build, lint and test, the folder layout, the error-handling pattern, and one good
+example endpoint and test. The agent reads it automatically.
+
+**Another company** (a client I contract for):
+1. Create a Slack app in their workspace from `slack-app-manifest.yaml`, install it, and copy the
+   bot (`xoxb-`), user (`xoxp-`) and app-level (`xapp-`, `connections:write`) tokens. Get my member ID there.
+   If they have no Slack, use `notify_via: arebak` to send their cards to Arebak2 instead.
+2. Create a Jira API token at https://id.atlassian.com/manage-profile/security/api-tokens with that company's login.
+3. Create git tokens: GitHub fine-grained (one per org) or GitLab (`api` + `write_repository`, with `url` if self-hosted).
+4. Add the secrets to `.env` and a new entry to `companies.yaml` (see `companies.example.yaml`).
+
+> Before connecting a client, check that their policy or my contract allows sending their code and
+> tickets to an AI provider.
+
+Companies stay separate. Triage only sees that company's repos, cards go to its own Slack, each
+clone and push uses its own token, Jira keys are tracked per company, and buttons only act on tasks
+from their own workspace.
+
+## Safety model
+- **Ask-first.** Nothing is coded until I tap Go, and only my Slack user ID can press the buttons.
+  `AUTO_START=true` lets confident tasks start on their own. Leave it off until triage has been reliable for a few weeks.
+- **Request text is treated as data, not instructions,** in both the triage and agent prompts.
+- **No secrets reach the agent.** Its environment is just `PATH`, `HOME` and the Anthropic key. The git
+  remote has no token in it. Credentials only go to `git clone` and `git push`, which this program runs itself.
+- **Blocked commands:** `git push`/`remote`, `curl`/`wget`/`ssh`, `docker`/`kubectl`/cloud CLIs, `sudo`, `rm -rf /`.
+  Web tools are disabled.
+- **Only `agent/*` branches and draft PRs.** It can't merge or deploy. Keep `dev`/`main` protected.
+- **Only repos in `companies.yaml`.** Tasks run one at a time.
+
+> The command blocklist is a guardrail, not a perfect sandbox. Run it in Docker, on a machine without
+> production credentials, with tokens scoped only to the repos listed above.
 
 ## Project layout
 ```
@@ -106,8 +145,7 @@ src/
 ```
 
 ## Next steps
-1. **Update the PR from review comments:** poll the PR/MR for your review comments, then rerun the agent on the same branch.
-2. **Post back to the source after you approve:** reply "PR is up" in the Slack thread and move the Jira ticket to In Review.
+1. **Update the PR from review comments:** poll the PR/MR for my review comments, then rerun the agent on the same branch.
+2. **Post back to the source after I approve:** reply "PR is up" in the Slack thread and move the Jira ticket to In Review.
 3. **Run tasks in parallel:** run each task in its own container with a concurrency limit.
-4. **Team mode** (later): per-user settings and a central service.
-5. **Per-company Anthropic keys:** to bill each client separately.
+4. **Per-company Anthropic keys:** to bill each client separately.
