@@ -18,9 +18,9 @@ Slack mention / Jira assignment
 
 | | |
 |---|---|
-| Company | **Arebak** (`id: arebak`) |
-| Slack workspace | Arebak2. My member ID: `U0BD9U81FB6` |
-| Jira | https://arebak-team.atlassian.net (as `quadri.abolarinwa@arebak.io`), polled every 120s |
+| Company | **CompanyA** (`id: companya`) |
+| Slack workspace | CompanyA. My member ID: `U0123456789` |
+| Jira | https://companya.atlassian.net (as `me@companya.com`), polled every 120s |
 | Models | `claude-sonnet-5-5` for both triage and coding |
 | Limits per task | 60 turns · $3 budget · 30 min timeout |
 | Auto-start | **off**. Nothing runs until I tap Go |
@@ -30,16 +30,16 @@ Slack mention / Jira assignment
 
 | Name | Repo | Base branch | Token (`.env`) | Routed by |
 |---|---|---|---|---|
-| Sheltera | `Arebak/sheltera-dashboard` (GitHub) | `dev` | `AREBAK_GITHUB_TOKEN` | Slack `#arbol` · contractor, vegetation, trimming |
-| Alex | `Arebak-ALEX/Alex-backend` (GitHub) | `main` | `AREBAK_ALEX_GITHUB_TOKEN` | Jira `AssetLife` · Slack `#wmp` `#assetledger` `#asset-life` `#stormwrangler` · wildfire, risk, storm, ledger… |
+| Dashboard | `companya/web-dashboard` (GitHub) | `dev` | `COMPANYA_GITHUB_TOKEN` | Slack `#dashboard` · ui, report, chart |
+| Payments | `companya-payments/payments-api` (GitHub) | `main` | `COMPANYA_PAYMENTS_GITHUB_TOKEN` | Jira `PAY` · Slack `#payments` `#billing` · invoice, refund, checkout |
 
 The two repos live in different GitHub orgs, and a fine-grained GitHub token only covers one org,
-so Alex has its own token (`token_env` on that repo in `companies.yaml`).
+so Payments has its own token (`token_env` on that repo in `companies.yaml`).
 
 ### Where things live
 - `.env`: all secrets (Anthropic key, Slack bot/app/user tokens, Jira token, GitHub/GitLab tokens). Never commit it.
 - `companies.yaml`: companies, repos and routing hints. It only *names* the env vars that hold secrets.
-- `data/`: the SQLite task DB (`backendbot.db`) and the per-task clones under `data/work/arebak/`.
+- `data/`: the SQLite task DB (`backendbot.db`) and the per-task clones under `data/work/companya/`.
 
 ## Run it
 
@@ -52,16 +52,16 @@ docker compose down            # stop
 
 A healthy start looks like this, followed by a 🟢 DM in Slack:
 ```
-[slack:arebak] connected (Socket Mode)
-[jira:arebak] polling https://arebak-team.atlassian.net every 120s
-[company:arebak] 2 repos · slack own · jira on
+[slack:companya] connected (Socket Mode)
+[jira:companya] polling https://companya.atlassian.net every 120s
+[company:companya] 2 repos · slack own · jira on
 [backendbot] ready · 1 companies · auto-start off
 ```
 
 ## Day to day
 - Every task gets one DM card. Progress, the PR link, test results, assumptions and questions go in its thread.
 - **Wrong repo?** Change it in the dropdown before tapping Go.
-- **Failed?** The reason is in the thread, and the workspace is kept under `data/work/arebak/` for
+- **Failed?** The reason is in the thread, and the workspace is kept under `data/work/companya/` for
   inspection. Tap **Go** to retry.
 - To see recent tasks:
   ```bash
@@ -71,17 +71,17 @@ A healthy start looks like this, followed by a 🟢 DM in Slack:
 ## Troubleshooting
 
 **No DMs at all, but the logs look fine.** Check `slack.my_user_id` in `companies.yaml`. It must be my
-member ID in *that* workspace (`U0BD9U81FB6` for Arebak2), not the example value. If it's wrong,
+member ID in *that* workspace (e.g. `U0123456789`), not the example value. If it's wrong,
 every DM fails with `channel_not_found` and the Go/Skip buttons ignore me. Startup now logs
 `could not DM ...` when this happens. To look up the ID behind the user token:
 ```bash
-docker compose exec -T backendbot node -e 'new (require("@slack/web-api").WebClient)(process.env.AREBAK_SLACK_USER_TOKEN).auth.test().then(r=>console.log(r.user_id, r.team))'
+docker compose exec -T backendbot node -e 'new (require("@slack/web-api").WebClient)(process.env.COMPANYA_SLACK_USER_TOKEN).auth.test().then(r=>console.log(r.user_id, r.team))'
 ```
 
 **Mentions aren't picked up.** The app needs the user scopes and `user_events` from
 `slack-app-manifest.yaml`. Reinstall the app after changing the manifest and update the `xoxp-` token in `.env`.
 
-**Clone or push fails.** Check that the repo's token covers that org (`Arebak` vs `Arebak-ALEX`) and
+**Clone or push fails.** Check that the repo's token covers that org (e.g. `companya` vs `companya-payments`) and
 has **Contents** and **Pull requests** set to read/write.
 
 **Tests can't run in the container.** The image has Node 22, Python 3, make and g++. Add any other
@@ -91,7 +91,7 @@ toolchain a repo needs to the `Dockerfile`.
 
 **A repo:** add an entry under `repos:` in `companies.yaml` with `name`, `provider`, `path`,
 `default_branch`, `description` and routing hints (`jira_projects`, `slack_channels`, `keywords`).
-If it's in a GitHub org not covered by `AREBAK_GITHUB_TOKEN`, create a fine-grained token for that
+If it's in a GitHub org not covered by the company's main GitHub token, create a fine-grained token for that
 org, add it to `.env`, and set `token_env` on the repo. Then add a `CLAUDE.md` at the repo root
 covering how to build, lint and test, the folder layout, the error-handling pattern, and one good
 example endpoint and test. The agent reads it automatically.
@@ -99,7 +99,7 @@ example endpoint and test. The agent reads it automatically.
 **Another company** (a client I contract for):
 1. Create a Slack app in their workspace from `slack-app-manifest.yaml`, install it, and copy the
    bot (`xoxb-`), user (`xoxp-`) and app-level (`xapp-`, `connections:write`) tokens. Get my member ID there.
-   If they have no Slack, use `notify_via: arebak` to send their cards to Arebak2 instead.
+   If they have no Slack, use `notify_via: companya` to send their cards to the CompanyA workspace instead.
 2. Create a Jira API token at https://id.atlassian.com/manage-profile/security/api-tokens with that company's login.
 3. Create git tokens: GitHub fine-grained (one per org) or GitLab (`api` + `write_repository`, with `url` if self-hosted).
 4. Add the secrets to `.env` and a new entry to `companies.yaml` (see `companies.example.yaml`).
