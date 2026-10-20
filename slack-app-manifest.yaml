@@ -1,0 +1,29 @@
+# Slack: Create New App > From a manifest > paste this.
+# Then: install to workspace, create an App-Level Token with connections:write (SLACK_APP_TOKEN).
+display_information:
+  name: BackendBot
+  description: My personal coding agent
+features:
+  bot_user:
+    display_name: BackendBot
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - im:write
+    user:
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+settings:
+  event_subscriptions:
+    user_events:          # events "on behalf of" you: messages in conversations you're in
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true

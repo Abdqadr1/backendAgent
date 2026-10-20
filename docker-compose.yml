@@ -1,0 +1,13 @@
+services:
+  backendbot:
+    build: .
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      COMPANIES_FILE: /app/companies.yaml
+    volumes:
+      - ./data:/data
+      - ./companies.yaml:/app/companies.yaml:ro
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: 2

@@ -1,0 +1,63 @@
+# One entry per company. Each company is a separate world: its own Slack, Jira, git tokens and repos.
+# Secrets never go in this file. Each *_env names a variable in .env.
+companies:
+  - id: arebak                      # lowercase, digits, dashes
+    name: Arebak
+    slack:
+      bot_token_env: AREBAK_SLACK_BOT_TOKEN
+      app_token_env: AREBAK_SLACK_APP_TOKEN
+      user_token_env: AREBAK_SLACK_USER_TOKEN
+      my_user_id: U0123456789        # your member ID in THIS workspace
+    jira:
+      base_url: https://arebak-team.atlassian.net
+      email: you@arebak.com
+      token_env: AREBAK_JIRA_TOKEN
+      # jql: assignee = currentUser() AND statusCategory != Done AND updated >= -15m ORDER BY updated DESC
+      # poll_seconds: 120
+    github:
+      token_env: AREBAK_GITHUB_TOKEN  # fine-grained token, resource owner = Arebak's GitHub org
+      reviewer: ""                     # your GitHub username, only if the token belongs to a bot account
+    gitlab:
+      url: https://gitlab.com
+      token_env: AREBAK_GITLAB_TOKEN
+    repos:
+      - name: payments-service
+        provider: github
+        path: arebak/payments-service
+        default_branch: main
+        description: Payment processing and refunds
+        jira_projects: [PAY]
+        slack_channels: [C0PAYMENTS1]
+        keywords: [refund, payment, paystack]
+      - name: orders-api
+        provider: gitlab
+        path: arebak/backend/orders-api
+        default_branch: develop
+        description: Order lifecycle and checkout API
+        jira_projects: [ORD]
+      # A repo in a SECOND GitHub org of the same company: give it its own token.
+      - name: mobile-bff
+        provider: github
+        path: arebak-labs/mobile-bff
+        default_branch: main
+        token_env: AREBAK_LABS_GITHUB_TOKEN
+
+  - id: client-b
+    name: Client B
+    # Client B has no Slack you can install an app in, so its cards go to Arebak's Slack.
+    # Only do this if you're comfortable with Client B task summaries appearing there.
+    notify_via: arebak
+    jira:
+      base_url: https://clientb.atlassian.net
+      email: you@clientb.com
+      token_env: CLIENTB_JIRA_TOKEN
+    gitlab:
+      url: https://gitlab.clientb.com  # self-hosted
+      token_env: CLIENTB_GITLAB_TOKEN
+    repos:
+      - name: api
+        provider: gitlab
+        path: platform/api
+        default_branch: main
+        description: Client B core REST API
+        jira_projects: [CB]
