@@ -10,7 +10,7 @@ Slack mention / Jira assignment
    → capture task (SQLite, deduped by thread / ticket key)
    → triage: coding? which repo? plan?
    → DM me: summary · plan · repo picker · [Go] [Skip]
-   → on Go: fresh clone → agent/<branch> → Claude Agent SDK codes + runs tests → commit
+   → on Go: fresh clone → agent/<branch> → Claude Code CLI (`claude -p`) codes + runs tests → commit
    → push → draft PR/MR → DM me the link + what to check
 ```
 
@@ -21,8 +21,9 @@ Slack mention / Jira assignment
 | Company | **CompanyA** (`id: companya`) |
 | Slack workspace | CompanyA. My member ID: `U0123456789` |
 | Jira | https://companya.atlassian.net (as `me@companya.com`), polled every 120s |
-| Models | `claude-sonnet-5-5` for both triage and coding |
-| Limits per task | 60 turns · $3 budget · 30 min timeout |
+| Claude | Claude Code CLI on my Pro/Max subscription (`AUTH_MODE=subscription`) |
+| Models | Plan default (leave `TRIAGE_MODEL` / `AGENT_MODEL` empty), or e.g. `sonnet` |
+| Limits per task | 60 turns · 30 min timeout (plus a $3 budget in api mode) |
 | Auto-start | **off**. Nothing runs until I tap Go |
 | Commits authored as | `BackendBot <backendbot@users.noreply.github.com>` |
 
@@ -37,7 +38,7 @@ The two repos live in different GitHub orgs, and a fine-grained GitHub token onl
 so Payments has its own token (`token_env` on that repo in `companies.yaml`).
 
 ### Where things live
-- `.env`: all secrets (Anthropic key, Slack bot/app/user tokens, Jira token, GitHub/GitLab tokens). Never commit it.
+- `.env`: all secrets (Claude token, Slack bot/app/user tokens, Jira token, GitHub/GitLab tokens). Never commit it.
 - `companies.yaml`: companies, repos and routing hints. It only *names* the env vars that hold secrets.
 - `data/`: the SQLite task DB (`backendbot.db`) and the per-task clones under `data/work/companya/`.
 
@@ -52,11 +53,46 @@ docker compose down            # stop
 
 A healthy start looks like this, followed by a 🟢 DM in Slack:
 ```
+[claude] CLI self-test passed (AUTH_MODE=subscription)
 [slack:companya] connected (Socket Mode)
 [jira:companya] polling https://companya.atlassian.net every 120s
 [company:companya] 2 repos · slack own · jira on
 [backendbot] ready · 1 companies · auto-start off
 ```
+
+## Claude auth
+
+The bot runs the Claude Code CLI (`claude -p`) for both triage and coding, pinned in the `Dockerfile`.
+
+**Subscription (default).** This uses my own Claude Pro/Max plan.
+1. On my machine, with Claude Code installed and logged in to my account, run `claude setup-token`.
+2. Copy the token it prints (`sk-ant-oat01-…`) into `.env`:
+   ```
+   AUTH_MODE=subscription
+   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   ```
+   Leave `ANTHROPIC_API_KEY` unset in this mode. The bot never passes both to the CLI.
+3. Run `docker compose up -d --build`. At startup the bot makes a one-line test call, and exits with
+   instructions if the token doesn't work.
+
+Things to know:
+- **It uses my plan's limits.** Every triage and coding run counts against the same usage limits as my
+  normal Claude and Claude Code use. A busy day of tasks can use up my limit for chatting, and the reverse.
+- **At the limit,** the task fails with "Claude usage limit reached; tap Go to retry later". Nothing is
+  pushed and nothing is retried automatically. Tap **Go** once the limit resets.
+- **The token is personal.** It's tied to my account. Don't share it, commit it, or use this bot to run
+  tasks for other people.
+- **It expires after about a year.** When the self-test starts failing, run `claude setup-token` again and update `.env`.
+- The DM shows **turns used** instead of cost, because a subscription has no per-task cost.
+  `AGENT_MAX_TURNS` and `TASK_TIMEOUT_MINUTES` are the limits.
+
+**API key (fallback).** Pay-as-you-go billing to an Anthropic API account:
+```
+AUTH_MODE=api
+ANTHROPIC_API_KEY=sk-ant-...
+AGENT_MAX_BUDGET_USD=3    # hard cost cap per task, only applies in this mode
+```
+Remove or comment out `CLAUDE_CODE_OAUTH_TOKEN`, then run `docker compose restart`. DMs show the cost again.
 
 ## Day to day
 - Every task gets one DM card. Progress, the PR link, test results, assumptions and questions go in its thread.
@@ -77,6 +113,10 @@ every DM fails with `channel_not_found` and the Go/Skip buttons ignore me. Start
 ```bash
 docker compose exec -T backendbot node -e 'new (require("@slack/web-api").WebClient)(process.env.COMPANYA_SLACK_USER_TOKEN).auth.test().then(r=>console.log(r.user_id, r.team))'
 ```
+
+**Bot exits with "Claude CLI self-test failed".** The token is missing, expired or revoked. Run
+`claude setup-token` again and update `CLAUDE_CODE_OAUTH_TOKEN` in `.env`. If the message says
+"usage limit", wait for the limit to reset.
 
 **Mentions aren't picked up.** The app needs the user scopes and `user_events` from
 `slack-app-manifest.yaml`. Reinstall the app after changing the manifest and update the `xoxp-` token in `.env`.
@@ -115,7 +155,11 @@ from their own workspace.
 - **Ask-first.** Nothing is coded until I tap Go, and only my Slack user ID can press the buttons.
   `AUTO_START=true` lets confident tasks start on their own. Leave it off until triage has been reliable for a few weeks.
 - **Request text is treated as data, not instructions,** in both the triage and agent prompts.
-- **No secrets reach the agent.** Its environment is just `PATH`, `HOME` and the Anthropic key. The git
+- **Locked-down CLI runs.** Each coding run gets a settings file (outside the repo) that allows only
+  Read/Glob/Grep/Edit/Write/TodoWrite/Bash and denies web tools and the commands below. It uses
+  `--permission-mode dontAsk`, so it never stops to ask, and a Bash hook re-checks every command. It
+  ignores the repo's own `.claude/` settings and `.mcp.json`. Triage runs with no tools at all.
+- **No secrets reach the agent.** Its environment is just `PATH`, `HOME` and the Claude token (or API key). The git
   remote has no token in it. Credentials only go to `git clone` and `git push`, which this program runs itself.
 - **Blocked commands:** `git push`/`remote`, `curl`/`wget`/`ssh`, `docker`/`kubectl`/cloud CLIs, `sudo`, `rm -rf /`.
   Web tools are disabled.
@@ -138,7 +182,10 @@ src/
   triage.ts         coding? which repo? plan?
   pipeline.ts       triage → DM card (→ auto-start)
   worker.ts         clone → branch → agent → push → PR
-  agent.ts          Claude Agent SDK run + permission rules
+  claude.ts         runs `claude -p`: clean env, timeout, usage-limit detection, startup self-test
+  agent.ts          coding run: prompt, per-run permission settings
+  bashGuard.ts      Bash hook: blocks pushes, network and infra commands
+  blocked.ts        the blocked-command patterns
   providers.ts      GitHub PR / GitLab MR
   notify.ts         Slack DM cards and thread updates
   git.ts            safe git exec + token redaction
@@ -148,4 +195,4 @@ src/
 1. **Update the PR from review comments:** poll the PR/MR for my review comments, then rerun the agent on the same branch.
 2. **Post back to the source after I approve:** reply "PR is up" in the Slack thread and move the Jira ticket to In Review.
 3. **Run tasks in parallel:** run each task in its own container with a concurrency limit.
-4. **Per-company Anthropic keys:** to bill each client separately.
+4. **Per-company Claude accounts:** to bill each client separately (api mode).

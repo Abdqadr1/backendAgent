@@ -1,4 +1,5 @@
 import { getCompany } from "./companies.js";
+import { config } from "./config.js";
 import { triageOf, updateTask } from "./db.js";
 import { notifyWorkspace } from "./slackApps.js";
 import type { AgentReport, Task } from "./types.js";
@@ -110,7 +111,7 @@ export async function replyInThread(task: Task, text: string): Promise<void> {
   });
 }
 
-export async function sendPrDone(task: Task, prUrl: string, report: AgentReport, cost: number): Promise<void> {
+export async function sendPrDone(task: Task, prUrl: string, report: AgentReport, usage: { costUsd: number; turns: number }): Promise<void> {
   const testIcon = report.tests === "passed" ? "✅" : report.tests === "failed" ? "❌" : "⚠️";
   const parts = [
     `*Draft PR ready:* <${prUrl}|open PR>`,
@@ -119,7 +120,9 @@ export async function sendPrDone(task: Task, prUrl: string, report: AgentReport,
     `*Tests:* ${testIcon} ${esc(report.tests)}${report.tests_detail ? ` · ${esc(report.tests_detail)}` : ""}`,
     report.assumptions.length ? `*Assumptions to check:*\n${bullets(report.assumptions)}` : "",
     report.questions.length ? `*Questions:*\n${bullets(report.questions)}` : "",
-    `_cost ≈ $${cost.toFixed(2)}_`,
+    config.authMode === "api"
+      ? `_cost ≈ $${usage.costUsd.toFixed(2)}_`
+      : `_turns used: ${usage.turns} / ${config.agentMaxTurns}_`,
   ].filter(Boolean);
   await replyInThread(task, parts.join("\n\n"));
   await setCardStatus(task, `✅ Draft PR open: <${prUrl}|${prUrl.split("/").slice(-3).join("/")}>`);

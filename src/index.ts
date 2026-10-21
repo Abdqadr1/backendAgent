@@ -1,3 +1,4 @@
+import { selfTest } from "./claude.js";
 import { companies } from "./companies.js";
 import { config } from "./config.js";
 import { startJiraPolling } from "./intake/jira.js";
@@ -6,6 +7,9 @@ import { workspaces } from "./slackApps.js";
 import { recoverQueue } from "./worker.js";
 
 async function main(): Promise<void> {
+  await selfTest();
+  console.log(`[claude] CLI self-test passed (AUTH_MODE=${config.authMode})`);
+
   for (const ws of workspaces.values()) {
     registerSlackIntake(ws);
     registerSlackActions(ws);

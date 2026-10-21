@@ -140,6 +140,7 @@ export function hintRepo(task: Task): string | null {
 /** Every credential, for redacting error messages. */
 export function allSecrets(): string[] {
   const out: string[] = [];
+  out.push(config.claudeOauthToken, config.anthropicKey);
   for (const c of companies) {
     if (c.github) out.push(c.github.token);
     if (c.gitlab) out.push(c.gitlab.token);

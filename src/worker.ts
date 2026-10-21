@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runAgent } from "./agent.js";
+import { USAGE_LIMIT_MESSAGE } from "./claude.js";
 import { config } from "./config.js";
 import { getTask, tasksWithStatus, triageOf, updateTask } from "./db.js";
 import { authUrl, cleanUrl, sh } from "./git.js";
@@ -9,7 +10,7 @@ import { openPullRequest } from "./providers.js";
 import { getCompany, getRepo } from "./companies.js";
 import type { AgentReport, Task } from "./types.js";
 
-// One task at a time: predictable cost, and you review one PR at a time anyway.
+// One task at a time: predictable cost and plan usage, and you review one PR at a time anyway.
 const queue: string[] = [];
 let busy = false;
 
@@ -87,7 +88,11 @@ async function runTask(id: string): Promise<void> {
 
     // 2. Let the agent plan, code, test, and commit.
     const run = await runAgent(dir, task, triage, repo, branch);
-    updateTask(id, { cost_usd: run.costUsd });
+    // On a subscription the CLI's cost figure is notional, so it's only recorded in api mode.
+    const costUsd = config.authMode === "api" ? run.costUsd : 0;
+    updateTask(id, { cost_usd: costUsd });
+    // Out of plan usage: stop here without pushing half-done work. Not retried automatically.
+    if (run.limitHit) throw new Error(USAGE_LIMIT_MESSAGE);
 
     // 3. Commit anything it left uncommitted.
     if (sh("git", ["status", "--porcelain"], dir)) {
@@ -110,8 +115,8 @@ async function runTask(id: string): Promise<void> {
     });
 
     updateTask(id, { status: "pr_open", pr_url: prUrl });
-    await sendPrDone(getTask(id)!, prUrl, run.report, run.costUsd);
-    console.log(`[worker] ${id} → ${prUrl} ($${run.costUsd.toFixed(2)})`);
+    await sendPrDone(getTask(id)!, prUrl, run.report, { costUsd, turns: run.turns });
+    console.log(`[worker] ${id} → ${prUrl} (${config.authMode === "api" ? `$${costUsd.toFixed(2)}` : `${run.turns} turns`})`);
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (e) {
     // Keep the working dir on failure so you can inspect it.

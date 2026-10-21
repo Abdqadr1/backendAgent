@@ -1,28 +1,35 @@
-import { query, type CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describeFailure, isUsageLimit, modelFlag, runClaude, tempDir, USAGE_LIMIT_MESSAGE } from "./claude.js";
 import { config } from "./config.js";
 import type { RepoConfig } from "./companies.js";
 import type { AgentReport, Task, Triage } from "./types.js";
 
-// Shell commands the agent may never run. Everything else in Bash is allowed inside the container.
-const BLOCKED_BASH: RegExp[] = [
-  /\bgit\s+(push|remote|config\s+--global|credential)\b/,
-  /\b(curl|wget|ssh|scp|rsync|nc|ncat|telnet)\b/,
-  /\b(sudo|su|docker|kubectl|terraform|helm|aws|gcloud|az)\b/,
-  /\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$HOME)(\s|$)/,
-  /\b(printenv|env)\b\s*($|\|)/,
+const TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "TodoWrite", "Bash"];
+const DENIED_COMMANDS = [
+  "git push", "git remote", "git config --global", "git credential",
+  "curl", "wget", "ssh", "scp", "rsync", "nc", "sudo",
+  "docker", "kubectl", "terraform", "helm", "aws", "gcloud", "az", "printenv", "env",
 ];
+const DENY = ["WebFetch", "WebSearch", ...DENIED_COMMANDS.flatMap((c) => [`Bash(${c})`, `Bash(${c} *)`])];
+const BASH_GUARD = path.join(path.dirname(fileURLToPath(import.meta.url)), "bashGuard.js");
 
-const canUseTool: CanUseTool = async (toolName, input) => {
-  if (toolName === "Bash") {
-    const cmd = String(input.command ?? "");
-    const hit = BLOCKED_BASH.find((r) => r.test(cmd));
-    if (hit) {
-      return { behavior: "deny", message: `Not allowed in this sandbox: "${cmd}". Pushing and network/infra commands are handled outside the agent.` };
-    }
-    return { behavior: "allow", updatedInput: input };
-  }
-  return { behavior: "deny", message: `Tool ${toolName} is not available to this agent.` };
-};
+/**
+ * Per-run settings, written outside the clone. dontAsk denies anything not allowed here, so the agent
+ * can never stop to ask. The PreToolUse hook re-checks every Bash command against BLOCKED_BASH, which
+ * catches blocked commands anywhere in a pipeline, not just as a prefix.
+ */
+function settingsJson(): string {
+  return JSON.stringify({
+    permissions: { allow: TOOLS, deny: DENY, defaultMode: "dontAsk" },
+    hooks: {
+      PreToolUse: [
+        { matcher: "Bash", hooks: [{ type: "command", command: `${JSON.stringify(process.execPath)} ${JSON.stringify(BASH_GUARD)}` }] },
+      ],
+    },
+  });
+}
 
 const RULES = `You are BackendBot, a coding agent working for one backend engineer.
 You are in a fresh clone of the repository, already on a new branch. The engineer will review a draft PR.
@@ -46,6 +53,8 @@ export interface AgentRun {
   ok: boolean;
   report: AgentReport;
   costUsd: number;
+  turns: number;
+  limitHit: boolean;
   error?: string;
 }
 
@@ -64,54 +73,43 @@ ${(triage?.plan ?? []).map((p, i) => `${i + 1}. ${p}`).join("\n") || "(none)"}
 
 Do the work now.`;
 
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), config.taskTimeoutMs);
-  let resultText = "";
-  let costUsd = 0;
-  let ok = false;
-  let error: string | undefined;
+  const settingsDir = tempDir();
+  const settingsFile = path.join(settingsDir, "settings.json");
+  fs.writeFileSync(settingsFile, settingsJson());
+  const flags = [
+    "--append-system-prompt", RULES,
+    "--max-turns", String(config.agentMaxTurns),
+    "--settings", settingsFile,
+    "--tools", TOOLS.join(","),
+    "--allowedTools", TOOLS.join(","),
+    "--disallowedTools", DENY.join(","),
+    ...modelFlag(config.models.agent),
+    ...(config.authMode === "api" ? ["--max-budget-usd", String(config.agentMaxBudgetUsd)] : []),
+  ];
 
   try {
-    for await (const msg of query({
-      prompt,
-      options: {
-        cwd: dir,
-        model: config.models.agent,
-        maxTurns: config.agentMaxTurns,
-        maxBudgetUsd: config.agentMaxBudgetUsd,
-        abortController: abort,
-        permissionMode: "default",
-        allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "TodoWrite"],
-        disallowedTools: ["WebFetch", "WebSearch"],
-        canUseTool,
-        systemPrompt: { type: "preset", preset: "claude_code", append: RULES },
-        // Replaces the subprocess env entirely: no git/Slack/Jira tokens reach the agent.
-        env: {
-          PATH: process.env.PATH,
-          HOME: process.env.HOME,
-          ANTHROPIC_API_KEY: config.anthropicKey,
-          GIT_TERMINAL_PROMPT: "0",
-          CLAUDE_AGENT_SDK_CLIENT_APP: "backendbot/0.1.0",
-        },
-      },
-    })) {
-      if (msg.type === "result") {
-        costUsd = msg.total_cost_usd ?? 0;
-        if (msg.subtype === "success") {
-          ok = true;
-          resultText = msg.result;
-        } else {
-          error = msg.subtype;
-        }
-      }
-    }
-  } catch (e) {
-    error = abort.signal.aborted ? `timed out after ${config.taskTimeoutMs / 60000} min` : (e as Error).message;
+    const run = await runClaude(prompt, flags, dir, config.taskTimeoutMs);
+    const json = run.json;
+    const limitHit = isUsageLimit(run);
+    const ok = !run.timedOut && run.exitCode === 0 && json?.subtype === "success" && !json.is_error;
+    const error = ok
+      ? undefined
+      : limitHit
+        ? USAGE_LIMIT_MESSAGE
+        : run.timedOut
+          ? `timed out after ${config.taskTimeoutMs / 60000} min`
+          : describeFailure(run);
+    return {
+      ok,
+      report: parseReport(ok ? (json?.result ?? "") : "", error),
+      costUsd: json?.total_cost_usd ?? 0,
+      turns: json?.num_turns ?? 0,
+      limitHit,
+      error,
+    };
   } finally {
-    clearTimeout(timer);
+    fs.rmSync(settingsDir, { recursive: true, force: true });
   }
-
-  return { ok, report: parseReport(resultText, error), costUsd, error };
 }
 
 function parseReport(text: string, error?: string): AgentReport {
